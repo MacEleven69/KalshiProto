@@ -7,6 +7,7 @@ export default {
   theme: {
     extend: {
       colors: {
+        // Legacy "kalshi-*" colors (kept for backwards compatibility)
         'kalshi-dark': '#0a0f1a',
         'kalshi-darker': '#050810',
         'kalshi-card': '#111827',
@@ -15,10 +16,20 @@ export default {
         'kalshi-sell': '#ef4444',
         'kalshi-hold': '#6b7280',
         'kalshi-gold': '#f59e0b',
+        
+        // Whale Bot theme colors
+        'whale-dark': '#0a0f1a',
+        'whale-darker': '#050810',
+        'whale-card': '#111827',
+        'whale-accent': '#06b6d4',
+        'whale-buy': '#10b981',
+        'whale-sell': '#ef4444',
+        'whale-hold': '#6b7280',
+        'whale-gold': '#f59e0b',
       },
       fontFamily: {
         'mono': ['JetBrains Mono', 'Fira Code', 'monospace'],
-        'display': ['Inter', 'system-ui', 'sans-serif'],
+        'display': ['Outfit', 'Inter', 'system-ui', 'sans-serif'],
       },
     },
   },
