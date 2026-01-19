@@ -153,6 +153,9 @@ _state = {
     "bot_running": False,
     "loop_count": 0,
     "last_update": None,
+    "last_loop_start": None,
+    "last_loop_finish": None,
+    "bot_error": None,
 }
 
 # Bot loop control
@@ -201,12 +204,15 @@ async def fetch_markets(client: httpx.AsyncClient, limit: int = 20) -> list:
     try:
         response = await client.get(
             f"{KALSHI_API_BASE}/markets",
-            params={"limit": 100, "status": "active"},
+            params={"limit": 100},
             timeout=30.0,
         )
         response.raise_for_status()
         data = response.json()
         markets = data.get("markets", [])
+        
+        # Filter for open/active markets only
+        markets = [m for m in markets if m.get("status") in ("open", "active", None)]
         
         # Filter for markets with volume and sort by volume
         markets_with_volume = [
@@ -428,19 +434,21 @@ async def bot_loop():
     global _state
     
     logger.info("=" * 60)
-    logger.info(f"Bot loop starting in {BOT_MODE.upper()} mode")
-    logger.info(f"Loop interval: {BOT_INTERVAL} seconds")
+    logger.info(f"BOT LOOP: Starting in {BOT_MODE.upper()} mode, interval={BOT_INTERVAL}s")
     logger.info("=" * 60)
     
     _state["bot_running"] = True
+    _state["bot_error"] = None
     _state["overview"]["mode"] = BOT_MODE.upper()
     loop_count = 0
     
     async with httpx.AsyncClient() as client:
         while not _bot_stop_event.is_set():
             loop_count += 1
+            loop_start_time = datetime.now(timezone.utc)
             _state["loop_count"] = loop_count
-            _state["last_update"] = datetime.now(timezone.utc).isoformat()
+            _state["last_loop_start"] = loop_start_time.isoformat()
+            _state["last_update"] = loop_start_time.isoformat()
             
             try:
                 logger.info(f"--- Loop {loop_count} starting ---")
@@ -525,6 +533,10 @@ async def bot_loop():
                 # 4. Log P&L snapshot
                 record_pnl_snapshot()
                 
+                # Record loop finish time
+                loop_finish_time = datetime.now(timezone.utc)
+                _state["last_loop_finish"] = loop_finish_time.isoformat()
+                
                 logger.info(
                     f"Loop {loop_count} complete: "
                     f"{len(processed_markets)} markets, "
@@ -536,7 +548,8 @@ async def bot_loop():
                 logger.info("Bot loop cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in bot loop: {e}", exc_info=True)
+                _state["bot_error"] = str(e)
+                logger.exception(f"Error in bot loop: {e}")
             
             # Wait for next iteration
             try:
@@ -686,14 +699,23 @@ async def stop_bot():
 
 @app.get("/bot/status", tags=["Bot Control"])
 async def bot_status():
-    """Get bot running status."""
+    """Get detailed bot running status."""
+    # Check if task is actually running
+    task_running = _bot_task is not None and not _bot_task.done()
+    
     return {
-        "running": _state.get("bot_running", False),
+        "running": task_running,
+        "bot_enabled": BOT_ENABLED,
         "mode": BOT_MODE,
-        "loop_count": _state.get("loop_count", 0),
-        "last_update": _state.get("last_update"),
-        "model_version": MODEL_VERSION,
         "interval_seconds": BOT_INTERVAL,
+        "loop_count": _state.get("loop_count", 0),
+        "last_loop_start": _state.get("last_loop_start"),
+        "last_loop_finish": _state.get("last_loop_finish"),
+        "last_update": _state.get("last_update"),
+        "error": _state.get("bot_error"),
+        "model_version": MODEL_VERSION,
+        "positions_count": _state["overview"].get("open_positions", 0),
+        "total_exposure": _state["overview"].get("total_exposure", 0),
     }
 
 
@@ -755,21 +777,29 @@ async def startup_event():
     logger.info("KalshiProto API Starting...")
     logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
     logger.info(f"Port: {os.getenv('PORT', '8000')}")
-    logger.info(f"Bot Mode: {BOT_MODE}")
-    logger.info(f"Bot Enabled: {BOT_ENABLED}")
-    logger.info(f"Bot Interval: {BOT_INTERVAL}s")
     logger.info(f"Model Version: {MODEL_VERSION}")
     logger.info("=" * 60)
+    
+    # Clear BOT startup message
+    logger.info(f"BOT: startup, enabled={BOT_ENABLED}, mode={BOT_MODE}, interval={BOT_INTERVAL}s")
     
     # Log initial P&L snapshot
     record_pnl_snapshot()
     
     # Auto-start bot loop if enabled
     if BOT_ENABLED:
-        logger.info("Auto-starting bot loop...")
-        await start_bot_loop()
+        try:
+            logger.info("BOT: Auto-starting bot loop...")
+            success = await start_bot_loop()
+            if success:
+                logger.info("BOT: Loop started successfully")
+            else:
+                logger.warning("BOT: Loop failed to start (may already be running)")
+        except Exception as e:
+            logger.exception(f"BOT: Failed to start bot loop: {e}")
+            _state["bot_error"] = f"Startup failed: {e}"
     else:
-        logger.info("Bot auto-start disabled (set BOT_ENABLED=true to enable)")
+        logger.info("BOT: Auto-start disabled (set BOT_ENABLED=true to enable)")
 
 
 @app.on_event("shutdown")
