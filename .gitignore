@@ -77,13 +77,17 @@ out/
 *.local
 
 # Logs
-logs
+logs/
+backend/logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# Keep .gitkeep files to preserve directory structure
+!**/.gitkeep
 
 # Editor directories and files
 .vscode/*
