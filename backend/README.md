@@ -43,11 +43,67 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
+---
+
+## Bot Loop (Auto-Start)
+
+The trading bot loop **starts automatically** when the application starts. This means:
+
+- On Railway deployment, the bot begins polling Kalshi markets immediately
+- Signals, trades, whale detections, and P&L are logged continuously
+- The `/state/full` endpoint returns live data updated every loop
+
+### How It Works
+
+1. **Startup**: FastAPI fires a startup event that launches `bot_loop()` as an async background task
+2. **Loop**: Every `BOT_INTERVAL` seconds (default 60), the bot:
+   - Fetches top 20 markets from Kalshi API
+   - Analyzes orderbooks for each market
+   - Detects whale activity (large orders, high imbalance)
+   - Generates trading signals
+   - Executes paper trades (in paper mode)
+   - Updates in-memory state for `/state/full`
+   - Logs everything to CSV and stdout
+3. **Shutdown**: Bot loop stops gracefully on app shutdown
+
+### Bot Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BOT_MODE` | `paper` | Trading mode: `paper` or `live` |
+| `BOT_ENABLED` | `true` | Auto-start bot on startup: `true` or `false` |
+| `BOT_INTERVAL` | `60` | Loop interval in seconds |
+
+### Bot Control Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/bot/start` | POST | Manually start the bot loop |
+| `/bot/stop` | POST | Stop the bot loop |
+| `/bot/status` | GET | Get bot status (running, loop count, last update) |
+
+### Example Log Output
+
+When the bot is running, you'll see logs like:
+
+```
+2026-01-18 22:15:00 | INFO | main | --- Loop 1 starting ---
+2026-01-18 22:15:01 | INFO | main | Fetched 20 markets
+2026-01-18 22:15:02 | INFO | signals | SIGNAL | KXINX-26JAN23 | price=52.50 | pred=0.65 | action=enter_long | pos: 0.00 -> 100.00
+2026-01-18 22:15:02 | INFO | trades | TRADE | SUBMITTED | KXINX-26JAN23 | buy 100 @ 52.50
+2026-01-18 22:15:02 | INFO | trades | TRADE | FILLED | KXINX-26JAN23 | buy 100 @ 52.50
+2026-01-18 22:15:03 | INFO | whale | WHALE | large_bid | AAPL-YES | size=6,500 @ 48.00 | imb=32.5%
+2026-01-18 22:15:05 | INFO | pnl | PNL SNAPSHOT | cash=9900.00 | open_pnl=0.00 | realized=0.00 | exposure=100.00
+2026-01-18 22:15:05 | INFO | main | Loop 1 complete: 10 markets, 2 whales, 1 positions
+```
+
+---
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | API info |
+| `/` | GET | API info + bot status |
 | `/health` | GET | Health check |
 | `/docs` | GET | Swagger UI |
 | `/state/overview` | GET | Bot overview |
@@ -56,21 +112,31 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 | `/state/timeline` | GET | Timeline events |
 | `/state/full` | GET | Complete state for dashboard |
 | `/logs/stats` | GET | Log file statistics |
-| `/bot/start` | POST | Start bot (placeholder) |
-| `/bot/stop` | POST | Stop bot (placeholder) |
-| `/bot/status` | GET | Bot status (placeholder) |
+| `/bot/start` | POST | Start bot loop |
+| `/bot/stop` | POST | Stop bot loop |
+| `/bot/status` | GET | Bot running status |
 | `/demo/signal` | POST | Demo: test signal logging |
 | `/demo/whale` | POST | Demo: test whale logging |
 | `/demo/pnl` | POST | Demo: test P&L logging |
 
+---
+
 ## Environment Variables
 
-Create a `.env` file (optional):
+Create a `.env` file (optional for local dev):
 
 ```env
+# Server
 ENVIRONMENT=development
 PORT=8000
 LOG_LEVEL=INFO
+
+# Bot Configuration
+BOT_MODE=paper
+BOT_ENABLED=true
+BOT_INTERVAL=60
+
+# Kalshi API (for future live trading)
 KALSHI_API_KEY=your_api_key_here
 KALSHI_SECRET=your_secret_here
 ```
@@ -80,6 +146,9 @@ KALSHI_SECRET=your_secret_here
 | `ENVIRONMENT` | `development` | Environment name |
 | `PORT` | `8000` | Server port |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `BOT_MODE` | `paper` | `paper` = simulated trades, `live` = real orders |
+| `BOT_ENABLED` | `true` | Auto-start bot on app startup |
+| `BOT_INTERVAL` | `60` | Seconds between bot loop iterations |
 
 ---
 
@@ -159,7 +228,7 @@ Records whale detections and significant orderbook events.
 | `imbalance_strength` | Orderbook imbalance metric |
 | `side_bias` | Detected bias: `BUY_BIAS`, `SELL_BIAS` |
 
-### Railway Deployment Note
+### Railway Note on Logs
 
 On Railway, the filesystem is **ephemeral**. Log files are reset on each deploy or restart. These logs are primarily for:
 
@@ -168,62 +237,9 @@ On Railway, the filesystem is **ephemeral**. Log files are reset on each deploy 
 - Development and testing
 
 For persistent logging in production, consider:
-- Streaming logs to a service like Papertrail, Datadog, or LogDNA
-- Writing to a database (PostgreSQL, SQLite on a mounted volume)
-- Exporting snapshots periodically to S3 or similar
-
-### Using the Logging Functions
-
-```python
-from logging_utils import (
-    log_signal_decision,
-    log_trade,
-    log_trade_fill,
-    log_trade_error,
-    log_pnl_snapshot,
-    log_aggregate_pnl,
-    log_whale_event,
-    log_large_order,
-)
-
-# Log a signal decision
-log_signal_decision(
-    market_ticker="AAPL-YES",
-    decision_price=52.5,
-    features={"bid_ratio": 0.58, "volume": 1000},
-    prediction=0.72,
-    action="enter_long",
-    position_before=0,
-    position_after=100,
-)
-
-# Log a filled trade
-log_trade_fill(
-    market_ticker="AAPL-YES",
-    side="buy",
-    size=100,
-    fill_price=52.5,
-    order_id="order123",
-)
-
-# Log a whale detection
-log_large_order(
-    market_ticker="AAPL-YES",
-    side="bid",
-    size=8000,
-    price_level=52.0,
-    imbalance_strength=0.35,
-)
-
-# Log aggregate P&L
-log_aggregate_pnl(
-    cash=8500,
-    open_pnl=125.0,
-    realized_pnl=50.0,
-    gross_exposure=1500,
-    positions_count=2,
-)
-```
+- Streaming logs to Papertrail, Datadog, or LogDNA
+- Writing to a database
+- Exporting to S3 or similar
 
 ---
 
@@ -231,8 +247,8 @@ log_aggregate_pnl(
 
 ```
 backend/
-├── main.py              # FastAPI app entry point
-├── logging_utils.py     # Centralized logging configuration
+├── main.py              # FastAPI app + bot loop
+├── logging_utils.py     # Centralized logging
 ├── requirements.txt     # Python dependencies
 ├── README.md           # This file
 ├── .env                # Environment variables (not committed)
@@ -243,34 +259,14 @@ backend/
 │   ├── pnl_log.csv
 │   └── whale_log.csv
 │
-├── src/                # Your bot code (copy from existing)
-│   ├── config/
-│   ├── market_scanner.py
-│   ├── order_book_analyzer.py
-│   ├── global_whale_monitor.py
-│   ├── feature_builder.py
-│   ├── signal_model_gbm.py
-│   ├── risk_manager.py
-│   ├── execution_engine.py
+├── src/                # Your bot code (optional migration)
 │   └── ...
 │
 └── models/             # Trained ML models
     └── gbm_label_up.pkl
 ```
 
-## Migrating Existing Code
-
-To migrate your existing bot code:
-
-1. Copy `src/` folder from the original project
-2. Copy `models/` folder
-3. Update imports in `main.py` to use your modules
-4. Wire up the bot state to the API endpoints
-5. Call logging functions at appropriate points:
-   - `log_signal_decision()` after model prediction
-   - `log_trade()` when submitting/updating orders
-   - `log_pnl_snapshot()` after trades or on interval
-   - `log_whale_event()` when detecting whale activity
+---
 
 ## Railway Deployment
 
@@ -284,7 +280,56 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 **Root Directory:** Set to `backend` in Railway settings.
 
 **Environment Variables to set in Railway:**
-- `ENVIRONMENT=production`
-- `LOG_LEVEL=INFO`
-- `KALSHI_API_KEY=...`
-- `KALSHI_SECRET=...`
+
+| Variable | Value | Required |
+|----------|-------|----------|
+| `ENVIRONMENT` | `production` | Optional |
+| `BOT_MODE` | `paper` | Recommended |
+| `BOT_ENABLED` | `true` | Optional (default true) |
+| `BOT_INTERVAL` | `60` | Optional |
+| `LOG_LEVEL` | `INFO` | Optional |
+
+### What Happens on Railway
+
+1. Railway deploys and starts `uvicorn main:app`
+2. Startup event fires → bot loop starts automatically
+3. Bot polls Kalshi every 60 seconds
+4. Logs appear in Railway's log viewer
+5. Dashboard connects to `/state/full` and shows live data
+
+---
+
+## Disabling Auto-Start
+
+If you want to disable the bot on startup (for debugging):
+
+```env
+BOT_ENABLED=false
+```
+
+Then manually start it via:
+```bash
+curl -X POST http://localhost:8000/bot/start
+```
+
+---
+
+## Troubleshooting
+
+### Bot not starting?
+
+1. Check `BOT_ENABLED` is `true` (default)
+2. Look at startup logs for errors
+3. Hit `/bot/status` to see current state
+
+### No markets showing?
+
+1. Kalshi API may be rate-limited
+2. Check logs for fetch errors
+3. Some markets have no volume
+
+### Logs not appearing?
+
+1. Ensure `logs/` directory exists (auto-created)
+2. Check write permissions
+3. Verify `LOG_LEVEL` is `INFO` or `DEBUG`
